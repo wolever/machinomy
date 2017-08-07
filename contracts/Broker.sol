@@ -31,7 +31,22 @@ contract Broker is Mortal {
         uint256 payment;
     }
 
+    struct StateUpdate {
+        uint32  chainId;
+        address contractId;
+        bytes32 channelId;
+
+        uint32  nonce;
+        uint256 payment;
+
+        bytes32 hash;
+        uint8   sigV;
+        bytes32 sigR;
+        bytes32 sigS;
+    }
+
     mapping(bytes32 => PaymentChannel) channels;
+    uint32 chainId;
     uint id;
 
     event DidCreateChannel(address indexed sender, address indexed receiver, bytes32 channelId);
@@ -39,7 +54,8 @@ contract Broker is Mortal {
     event DidStartSettle(bytes32 indexed channelId, uint256 payment);
     event DidSettle(bytes32 indexed channelId, uint256 payment, uint256 oddValue);
 
-    function Broker() {
+    function Broker(chainId) {
+        chainId = chainId;
         id = 0;
     }
 
@@ -67,8 +83,14 @@ contract Broker is Mortal {
     }
 
     /* Receiver settles channel */
-    function claim(bytes32 channelId, uint256 payment, bytes32 h, uint8 v, bytes32 r, bytes32 s) public {
-        if (!canClaim(channelId, h, v, r, s)) return;
+    function claim(bytes32 channelId, uint32 nonce, uint256 payment, bytes32 hash, uint8 v, bytes32 r, bytes32 s) public {
+        var stateUpdate = StateUpdate(
+            this.chainId, address(this), channelId,
+            nonce, payment,
+            hash, v, r, s
+        );
+        if (!canClaim(msg.sender, stateUpdate))
+            return;
 
         this.settle(channelId, payment);
     }
@@ -128,10 +150,30 @@ contract Broker is Mortal {
             channel.sender == sender;
     }
 
-    function canClaim(bytes32 channelId, bytes32 h, uint8 v, bytes32 r, bytes32 s) constant returns(bool) {
-        var channel = channels[channelId];
-        return (channel.state == ChannelState.Open || channel.state == ChannelState.Settling) &&
-            channel.sender == ecrecover(h, v, r, s);
+    function canClaim(address sender, StateUpdate stateUpdate) constant returns(bool) {
+        var channel = channels[stateUpdate.channelId];
+        if (!(channel.state == ChannelState.Open || channel.state == ChannelState.Settling))
+            return false;
+
+        // Only the channel's recipient can make an immediate claim
+        if (sender != channel.receiver)
+            return false;
+
+        var actualHash = sha256(
+            stateUpdate.chainId,
+            stateUpdate.contractId,
+            stateUpdate.channelId,
+
+            stateUpdate.nonce,
+            stateUpdate.payment
+        );
+
+        return (channel.sender == ecrecover(
+            actualHash,
+            stateUpdate.sigV,
+            stateUpdate.sigR,
+            stateUpdate.sigS
+        ));
     }
 
     function canStartSettle(address sender, bytes32 channelId) constant returns(bool) {
