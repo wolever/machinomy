@@ -5,3 +5,5 @@ build/
 **/*.d.ts
 **/*.js
 **/*.js.map
+
+.*.sw[opq]
