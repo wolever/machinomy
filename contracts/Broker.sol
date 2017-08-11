@@ -1,4 +1,4 @@
-pragma solidity ^0.4.2;
+pragma solidity ^0.4.4;
 
 contract Owned {
     address owner;
@@ -31,38 +31,24 @@ contract Broker is Mortal {
         uint256 payment;
     }
 
-    struct StateUpdate {
-        uint32  chainId;
-        address contractId;
-        bytes32 channelId;
-
-        uint32  nonce;
-        uint256 payment;
-
-        bytes32 hash;
-        uint8   sigV;
-        bytes32 sigR;
-        bytes32 sigS;
-    }
-
     mapping(bytes32 => PaymentChannel) channels;
     uint32 chainId;
-    uint id;
+    uint32 id;
 
     event DidCreateChannel(address indexed sender, address indexed receiver, bytes32 channelId);
     event DidDeposit(bytes32 indexed channelId, uint256 value);
     event DidStartSettle(bytes32 indexed channelId, uint256 payment);
     event DidSettle(bytes32 indexed channelId, uint256 payment, uint256 oddValue);
 
-    function Broker(chainId) {
-        chainId = chainId;
+    function Broker(uint32 _chainId) {
+        chainId = _chainId;
         id = 0;
     }
 
     /******** ACTIONS ********/
 
     /* Create payment channel */
-    function createChannel(address receiver, uint duration, uint settlementPeriod) public payable {
+    function createChannel(address receiver, uint duration, uint settlementPeriod) public payable returns(bytes32) {
         var channelId = sha3(id++);
         var sender = msg.sender;
         var value = msg.value;
@@ -70,6 +56,8 @@ contract Broker is Mortal {
           PaymentChannel(sender, receiver, value, settlementPeriod, ChannelState.Open, block.timestamp + duration, 0);
 
         DidCreateChannel(sender, receiver, channelId);
+
+        return channelId;
     }
 
     /* Add funds to the channel */
@@ -83,16 +71,11 @@ contract Broker is Mortal {
     }
 
     /* Receiver settles channel */
-    function claim(bytes32 channelId, uint32 nonce, uint256 payment, bytes32 hash, uint8 v, bytes32 r, bytes32 s) public {
-        var stateUpdate = StateUpdate(
-            this.chainId, address(this), channelId,
-            nonce, payment,
-            hash, v, r, s
-        );
-        if (!canClaim(msg.sender, stateUpdate))
+    function claim(bytes32 channelId, uint256 payment, uint8 sigV, bytes32 sigR, bytes32 sigS) public {
+        if (!canClaim(msg.sender, channelId, payment, sigV, sigR, sigS))
             return;
 
-        this.settle(channelId, payment);
+        settle(channelId, payment);
     }
 
     /* Sender starts settling */
@@ -108,7 +91,7 @@ contract Broker is Mortal {
     /* Sender settles the channel, if receiver have not done that */
     function finishSettle(bytes32 channelId) public {
       if (!canFinishSettle(msg.sender, channelId)) throw;
-      this.settle(channelId, channels[channelId].payment);
+      settle(channelId, channels[channelId].payment);
     }
 
     function close(bytes32 channelId) {
@@ -146,12 +129,14 @@ contract Broker is Mortal {
 
     function canDeposit(address sender, bytes32 channelId) constant returns(bool) {
         var channel = channels[channelId]; 
+        // DW: Do we really need to check that only the sender is allowed to
+        //     deposit?
         return channel.state == ChannelState.Open &&
             channel.sender == sender;
     }
 
-    function canClaim(address sender, StateUpdate stateUpdate) constant returns(bool) {
-        var channel = channels[stateUpdate.channelId];
+    function canClaim(address sender, bytes32 channelId, uint256 payment, uint8 sigV, bytes32 sigR, bytes32 sigS) private constant returns(bool) {
+        var channel = channels[channelId];
         if (!(channel.state == ChannelState.Open || channel.state == ChannelState.Settling))
             return false;
 
@@ -159,21 +144,26 @@ contract Broker is Mortal {
         if (sender != channel.receiver)
             return false;
 
-        var actualHash = sha256(
-            stateUpdate.chainId,
-            stateUpdate.contractId,
-            stateUpdate.channelId,
+        return isStateUpdateSigValid(
+            sender,
+            chainId, address(this), channelId,
+            payment,
+            sigV, sigR, sigS
+        );
+    }
 
-            stateUpdate.nonce,
-            stateUpdate.payment
+    function isStateUpdateSigValid(
+        address sender,
+        uint32 chainId, address contractId, bytes32 channelId,
+        uint256 payment,
+        uint8 sigV, bytes32 sigR, bytes32 sigS
+    ) public returns(bool) {
+        var actualHash = sha256(
+            chainId, contractId, channelId,
+            payment
         );
 
-        return (channel.sender == ecrecover(
-            actualHash,
-            stateUpdate.sigV,
-            stateUpdate.sigR,
-            stateUpdate.sigS
-        ));
+        return (sender == ecrecover(actualHash, sigV, sigR, sigS));
     }
 
     function canStartSettle(address sender, bytes32 channelId) constant returns(bool) {
