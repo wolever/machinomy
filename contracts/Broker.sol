@@ -35,7 +35,7 @@ contract Broker is Mortal {
     uint32 chainId;
     uint32 id;
 
-    event DidCreateChannel(address indexed sender, address indexed receiver, bytes32 channelId);
+    event DidCreateChannel(bytes32 channelId, address indexed sender, address indexed receiver, uint256 value, uint settlementPeriod, uint until);
     event DidDeposit(bytes32 indexed channelId, uint256 value);
     event DidStartSettle(bytes32 indexed channelId, uint256 payment);
     event DidSettle(bytes32 indexed channelId, uint256 payment, uint256 oddValue);
@@ -55,7 +55,7 @@ contract Broker is Mortal {
         channels[channelId] =
           PaymentChannel(sender, receiver, value, settlementPeriod, ChannelState.Open, block.timestamp + duration, 0);
 
-        DidCreateChannel(sender, receiver, channelId);
+        DidCreateChannel(channelId, sender, receiver, value, settlementPeriod, block.timestamp + duration);
 
         return channelId;
     }
